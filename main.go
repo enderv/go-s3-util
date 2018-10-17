@@ -10,6 +10,7 @@ import (
 
 	"github.com/alyu/configparser"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
@@ -18,7 +19,7 @@ func main() {
 	sourceProfile := flag.String("p", "default", "Profile to use")
 	sourceBucket := flag.String("s", "source", "Source Bucket")
 	destinationBucket := flag.String("d", "destination", "Destination Bucket")
-	newPrefix := flag.String("n", "prefix", "new prefix")
+	newPrefix := flag.String("n", "", "new prefix")
 	olderThan := flag.Int("o", 30, "older than")
 	skipProfile := flag.Bool("k", false, "Skip profile check and just use default for use when no cred file and default will work")
 	credFile := flag.String("c", filepath.Join(getCredentialPath(), ".aws", "credentials"), "Full path to credentials file")
@@ -49,7 +50,18 @@ func main() {
 		sess = CreateSession(sourceProfile)
 	}
 	fmt.Println("Checking for objects older than " + expiresAt.Format(time.RFC3339))
-	listObjects(sess, sourceBucket, &expiresAt)
+	keysToMove, err := listObjects(sess, sourceBucket, &expiresAt)
+
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+
+	movedKeys := copyObjects(sess, sourceBucket, destinationBucket, newPrefix, keysToMove)
+
+	for _, element := range movedKeys {
+		fmt.Println("Copied: " + *element)
+	}
 }
 
 // CreateSession Creates AWS Session with specified profile
@@ -100,17 +112,45 @@ func listObjects(sess *session.Session, bucket *string, expirationTime *time.Tim
 		Bucket:  bucket,
 		MaxKeys: &helper,
 	}
-	pageNum := 0
 	var keys []*string
 	err := svc.ListObjectsV2Pages(input, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
-		pageNum++
 		for _, element := range page.Contents {
 			if element.LastModified.Before(*expirationTime) {
 				keys = append(keys, element.Key)
 			}
 		}
-
-		return pageNum <= 3
+		return lastPage
 	})
 	return keys, err
+}
+
+func copyObjects(sess *session.Session, sourceBucket *string, destinationBucket *string, prefix *string, keys []*string) []*string {
+	svc := s3.New(sess)
+	var successfulCopies []*string
+	for _, element := range keys {
+		input := &s3.CopyObjectInput{
+			Bucket:     aws.String(*sourceBucket),
+			CopySource: aws.String(*element),
+			Key:        aws.String(*prefix + *element),
+		}
+		_, err := svc.CopyObject(input)
+		if err != nil {
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				case s3.ErrCodeObjectNotInActiveTierError:
+					fmt.Println(s3.ErrCodeObjectNotInActiveTierError, aerr.Error())
+				default:
+					fmt.Println(aerr.Error())
+				}
+			} else {
+				// Print the error, cast err to awserr.Error to get the Code and
+				// Message from an error.
+				fmt.Println(err.Error())
+			}
+			continue
+		}
+
+		successfulCopies = append(successfulCopies, element)
+	}
+	return successfulCopies
 }
