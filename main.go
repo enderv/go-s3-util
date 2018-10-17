@@ -58,9 +58,9 @@ func main() {
 	}
 
 	movedKeys := copyObjects(sess, sourceBucket, destinationBucket, newPrefix, keysToMove)
-
-	for _, element := range movedKeys {
-		fmt.Println("Copied: " + *element)
+	deletedKeys := deleteOldObjects(sess, sourceBucket, movedKeys)
+	for _, element := range deletedKeys {
+		fmt.Println("Deleted: " + *element)
 	}
 }
 
@@ -129,8 +129,8 @@ func copyObjects(sess *session.Session, sourceBucket *string, destinationBucket 
 	var successfulCopies []*string
 	for _, element := range keys {
 		input := &s3.CopyObjectInput{
-			Bucket:     aws.String(*sourceBucket),
-			CopySource: aws.String(*element),
+			Bucket:     aws.String(*destinationBucket),
+			CopySource: aws.String("/" + *sourceBucket + "/" + *element),
 			Key:        aws.String(*prefix + *element),
 		}
 		_, err := svc.CopyObject(input)
@@ -153,4 +153,33 @@ func copyObjects(sess *session.Session, sourceBucket *string, destinationBucket 
 		successfulCopies = append(successfulCopies, element)
 	}
 	return successfulCopies
+}
+
+func deleteOldObjects(sess *session.Session, sourceBucket *string, keys []*string) []*string {
+	svc := s3.New(sess)
+	var successfulDeletes []*string
+	for _, element := range keys {
+		input := &s3.DeleteObjectInput{
+			Bucket: aws.String(*sourceBucket),
+			Key:    aws.String(*element),
+		}
+
+		_, err := svc.DeleteObject(input)
+		if err != nil {
+			if aerr, ok := err.(awserr.Error); ok {
+				switch aerr.Code() {
+				default:
+					fmt.Println(aerr.Error())
+				}
+			} else {
+				// Print the error, cast err to awserr.Error to get the Code and
+				// Message from an error.
+				fmt.Println(err.Error())
+			}
+			continue
+		}
+
+		successfulDeletes = append(successfulDeletes, element)
+	}
+	return successfulDeletes
 }
